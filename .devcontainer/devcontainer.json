@@ -1,0 +1,23 @@
+{
+	"name": "FortiGate Config Tools",
+	"dockerFile": "Dockerfile",
+	"context": "..",
+	"extensions": [
+		"ms-python.python"
+	],
+	"settings": {
+		"python.pythonPath": "/usr/local/bin/python",
+		"python.linting.enabled": true,
+		"python.linting.pylintEnabled": true,
+		"python.linting.pylintPath": "/usr/local/bin/pylint"
+	},
+
+	// Uncomment the next line if you want to publish any ports.
+	"appPort": [ "62200:22" ],
+
+	// set hostname on running container
+	"runArgs": [ "--hostname", "FGCT" ],
+
+	// Uncomment the next line to run commands after the container is created.
+	"postStartCommand": "screen -s /bin/ash -dmS code; nohup sh -c /usr/sbin/sshd -D >/dev/null 2>&1"
+}
