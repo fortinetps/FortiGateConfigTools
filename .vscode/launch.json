@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "FGTPolicyConsolidate",
+            "type": "python",
+            "request": "launch",
+            "program": "/workspaces/FortiGateConfigTools/src/FGTPolicyConsolidate.py",
+            "args": [],
+            "env": {"PYTHONPATH": "${workspaceRoot}"},
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "cwd": "${workspaceRoot}"
+        }
+    ]
+}
