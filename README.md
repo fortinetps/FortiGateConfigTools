@@ -13,7 +13,7 @@ FortiGate Configuration Tools which use [pyfgtconflib](https://github.com/fortin
 
 
 #### Usage :
-[FGTPolicyConsolidate.py](https://github.com/fortinetps/FortiGateConfigTools/src/FGTPolicyConsolidate.py) script
+[FGTPolicyConsolidate.py](https://github.com/fortinetps/FortiGateConfigTools/blob/main/src/FGTPolicyConsolidate.py) script
 Which takes FortiGate Configuration and consolidates firewall policies.
 The consolidation processes have 3 steps, 
 in step 1 it compares and consolidates services,
