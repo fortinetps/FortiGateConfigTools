@@ -62,7 +62,7 @@ for key1, pol1 in config['config vdom']['edit "root"']['config firewall policy']
     for key2, pol2 in reversed(list(consolidated_polilies_p1.items())):    # to speed up the search by reversed the list
         if pol1['set dstaddr'] == pol2['set dstaddr'] and pol1['set srcaddr'] == pol2['set srcaddr'] and pol1['set dstintf'] == pol2['set dstintf'] and pol1['set srcintf'] == pol2['set srcintf']:
             pol2_found = True
-            # print('consolidate policy:{} to policy:{}'.format(key1, key2))
+            print('consolidate policy:{} to policy:{}'.format(key1, key2))
             pol2['set service'][0] = pol2['set service'][0] + ' ' + pol1['set service'][0]
             break
     if not pol2_found:
