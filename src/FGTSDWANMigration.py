@@ -98,30 +98,31 @@ config = parse_file(filename)
 new_config = config
 
 # check if VDOM is enabled
-if len(config['config vdom']) == 1 and not vdom:
-    new_config = list(config['config vdom'].items())[0]
+if config.get('config vdom'):
+    if len(config['config vdom']) == 1 and not vdom:
+        new_config = list(config['config vdom'].items())[0]
 
-if len(config['config vdom']) > 1:
-    if not vdom:
-        print('FGT have {} VDOMs:'.format(len(config['config vdom'])))
-        for k, v in config['config vdom'].items():
-            print(k.split(' ')[1])
-        print('Please specify which VDOM you want SDWAN migration')
-        print_help()
-    else:
-        vdom_list = []
-        for k, v in config['config vdom'].items():
-            vdom_list.append(k)
-        k1 = 'edit ' + vdom
-        if k1 not in vdom_list:
-            print('Wrong FGT VDOM name specfied!')
+    if len(config['config vdom']) > 1:
+        if not vdom:
             print('FGT have {} VDOMs:'.format(len(config['config vdom'])))
             for k, v in config['config vdom'].items():
                 print(k.split(' ')[1])
             print('Please specify which VDOM you want SDWAN migration')
             print_help()
         else:
-            new_config= config['config vdom'][k1]
+            vdom_list = []
+            for k, v in config['config vdom'].items():
+                vdom_list.append(k)
+            k1 = 'edit ' + vdom
+            if k1 not in vdom_list:
+                print('Wrong FGT VDOM name specfied!')
+                print('FGT have {} VDOMs:'.format(len(config['config vdom'])))
+                for k, v in config['config vdom'].items():
+                    print(k.split(' ')[1])
+                print('Please specify which VDOM you want SDWAN migration')
+                print_help()
+            else:
+                new_config= config['config vdom'][k1]
 
 # check if SDWAN is enabled
 if 'enable' in new_config['config system sdwan']['set status']:
@@ -216,6 +217,7 @@ new_config['config router static']['edit 0']['set distance'] = ['1']
 
 # check
 if verbose:
-    niceprint(new_config['config system sdwan'])
-    niceprint(new_config['config firewall policy'])
-    niceprint(new_config['config router static'])
+    niceprint(new_config)
+    # niceprint(new_config['config system sdwan'])
+    # niceprint(new_config['config firewall policy'])
+    # niceprint(new_config['config router static'])
