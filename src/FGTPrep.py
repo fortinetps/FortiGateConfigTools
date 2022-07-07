@@ -1,5 +1,9 @@
 import re
+import sys
 import uuid
+import shlex
+import getopt
+from pathlib import Path
 from collections import defaultdict
 from functools import reduce
 
@@ -159,25 +163,225 @@ def parse_file(path):
 		conf.parse_text(f)
 		return conf.section_dict
 
-config = parse_file('/workspaces/FortiGateConfigTools/temp/FGT/config-all.txt')
+opts, args = getopt.getopt(sys.argv[1:],'hvi:g:', ['help'])
+fgt_folder = ''
+fmg_global = ''
+output_prefix = 'fmg-'
+verbose = False
 
+for opt, arg in opts:
+    if opt in ('-h', '--help'):
+        print('***********************************************************************************')
+        print('Usage: python FGTPrep.py -i <FGT configuration folder> -g <FMG global>')
+        print('')
+        print('***********************************************************************************')
+    elif opt == '-v':
+        verbose = True
+    elif opt == '-i':
+        fgt_folder = arg
+    elif opt == '-g':
+        fmg_global = arg
+
+fgt_path = Path(fgt_folder)
+fmg_path = Path(fmg_global)
+if not fgt_path.is_dir:
+    print('Please check and specify correct FGT configuration folder')
+    exit(2)
+if not fmg_path.is_file:
+    print('Please check and specify correct FMG configuration file')
+    exit(2)
+
+section_list = ['config firewall address', 'config firewall addrgrp', 'config firewall service custom', 'config firewall service group', 'config firewall policy']
+filter_list = ['-'.join(x.split(' ')) for x in section_list]
+# filter those configuration files we are intersted in
+fgt_files = [x for x in fgt_path.glob('*.txt') if x.is_file() and re.match(r'^\d+-({})(-\d+)*$'.format('|'.join(filter_list)), x.stem)]
+if not fgt_files:   # if there is no FGT files in the folder, return error
+    print('Please check and specify correct FGT configuration folder')
+    exit(2)
+
+# to combine
+local_objects = defaultdict(f)
+for section in section_list:
+    local_objects[section] = defaultdict(f)
+    for file in fgt_files:
+        if '-'.join(section.split(' ')) in file.stem:
+            section_config = parse_file(file.resolve())
+            for k, v in section_config[section].items():
+                local_objects[section][section][k] = v
+    combined_file = fgt_path / '{}{}.txt'.format(output_prefix, '-'.join(section.split(' ')))
+    original_stdout = sys.stdout
+    with open(combined_file.resolve(), 'w') as output:
+        sys.stdout = output
+        niceprint(local_objects[section], indent=1)
+        sys.stdout = original_stdout
+
+# fixing/preparing firewall policy
 # search firewall policy with - set global-label "Firewall Management"
 # and comment out this policy
-new_config_firewall_policy = defaultdict(f)
-for pol_id, pol in config['config firewall policy'].items():
+new_config_firewall_policy1 = defaultdict(f)
+for pol_id, pol in local_objects['config firewall policy']['config firewall policy'].items():
     if not pol_id.startswith('comment'): # skip comment
         if pol.get('set global-label', [''])[0].startswith('"Firewall Management'):
-            # print('Comment out this pol:{}'.format(pol_id))
-            new_config_firewall_policy[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
+            new_config_firewall_policy1[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
             for k1, v1 in pol.items():
                 if k1.startswith('comment'):    # already a comment
-                    new_config_firewall_policy[k1] = v1
+                    new_config_firewall_policy1[k1] = v1
                 else:    
-                    new_config_firewall_policy[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
-            new_config_firewall_policy[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
-            continue
+                    new_config_firewall_policy1[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
+            new_config_firewall_policy1[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
+        else:
+            new_config_firewall_policy1[pol_id] = pol
+    else:
+        new_config_firewall_policy1[pol_id] = pol
 
-    new_config_firewall_policy[pol_id] = pol
-config['config firewall policy'] = new_config_firewall_policy
+# add "set logtraffic-start enable" if "set logtraffic all" exists
+# add "set utm-status enable"
+# add "set profile-type group"
+# add "set profile-group "g.JPMC.SecProf""
+for pol_id, pol in new_config_firewall_policy1.items():
+    if not pol_id.startswith('comment'): # skip comment
+        if pol.get('set logtraffic', [''])[0] == 'all':
+            pol['set logtraffic-start'] = ['enable']
+            pol['set utm-status']       = ['enable']
+            pol['set profile-type']     = ['group']
+            pol['set profile-group']    = ['"g.JPMC.SecProf"']
 
-niceprint(config, indent=1)
+# find deny policies (mostly 2 of them but could be more), and comment out the last one and move other to the bottom
+new_config_firewall_policy2 = defaultdict(f)
+for pol_id, pol in new_config_firewall_policy1.items():
+    if not pol_id.startswith('comment'): # skip comment
+        if pol.get('set action', [''])[0] != 'deny':
+            new_config_firewall_policy2[pol_id] = pol
+    else:
+        new_config_firewall_policy2[pol_id] = pol
+
+last_deny_pol = ()
+for pol in list(new_config_firewall_policy1.items())[::-1]:
+    if not pol[0].startswith('comment'): # skip comment
+        if pol[1].get('set action', [''])[0] == 'deny':
+            last_deny_pol = pol
+            break
+
+if last_deny_pol:
+    for pol_id, pol in new_config_firewall_policy1.items():
+        if not pol_id.startswith('comment'): # skip comment
+            if pol.get('set action', [''])[0] == 'deny':
+                if pol_id != last_deny_pol[0]:  # not last deny policy
+                    new_config_firewall_policy2[pol_id] = pol
+                else:   # last deny policy
+                    new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
+                    for k1, v1 in pol.items():
+                        if k1.startswith('comment'):    # already a comment
+                            new_config_firewall_policy2[k1] = v1
+                        else:    
+                            new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
+                    new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
+
+firewall_policy_fix = fgt_path / '{}{}-fix.txt'.format(output_prefix, '-'.join('config firewall policy'.split(' ')))
+original_stdout = sys.stdout
+with open(firewall_policy_fix.resolve(), 'w') as output:
+    sys.stdout = output
+    niceprint({'config firewall policy': new_config_firewall_policy2}, indent=1)
+    sys.stdout = original_stdout
+
+# check FMG global object additions
+# first, get all address (including addrgrp) and service (including service group) objects referenced in firewall policies
+fgt_address_list = []
+fgt_service_list = []
+for pol_id, pol in new_config_firewall_policy2.items():
+    if not pol_id.startswith('comment'): # skip comment
+        set_srcaddr = shlex.split(pol.get('set srcaddr', [''])[0])
+        set_dstaddr = shlex.split(pol.get('set dstaddr', [''])[0])
+        set_service = shlex.split(pol.get('set service', [''])[0])
+        fgt_address_list.extend(set_srcaddr)
+        fgt_address_list.extend(set_dstaddr)
+        fgt_service_list.extend(set_service)
+
+fgt_address_list = list(sorted(set(fgt_address_list)))
+fgt_address_list.remove('all')
+fgt_service_list = list(sorted(set(fgt_service_list)))
+fgt_service_list.remove('ALL')
+
+# second, find definition in local configuration files
+# if not found, check FMG global export
+fmg_global_config = parse_file(fmg_path.resolve()).get('config vdom', {}).get('edit FortiGate', {})
+# if not found, check CP global from convert file and add to FMG object addition
+search_address = 'config firewall address'
+search_addrgrp = 'config firewall addrgrp'
+missing_address = []
+for address in fgt_address_list:
+    if local_objects[search_address].get(search_address, {}).get('edit "{}"'.format(address)):
+        continue
+    if local_objects[search_addrgrp].get(search_addrgrp, {}).get('edit "{}"'.format(address)):
+        continue
+    if fmg_global_config.get(search_address, {}).get('edit "{}"'.format(address)):
+        continue
+    if fmg_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address)):
+        continue
+    if local_objects[search_address].get(search_address, {}).get('edit {}'.format(address)):
+        continue
+    if local_objects[search_addrgrp].get(search_addrgrp, {}).get('edit {}'.format(address)):
+        continue
+    if fmg_global_config.get(search_address, {}).get('edit {}'.format(address)):
+        continue
+    if fmg_global_config.get(search_addrgrp, {}).get('edit {}'.format(address)):
+        continue
+    missing_address.append(address)
+    print('missing address object: {}'.format(address))
+
+search_servcus = 'config firewall service custom'
+search_servgrp = 'config firewall service group'
+missing_service = []
+for service in fgt_service_list:
+    if local_objects[search_servcus].get(search_servcus, {}).get('edit "{}"'.format(service)):
+        continue
+    if local_objects[search_servgrp].get(search_servgrp, {}).get('edit "{}"'.format(service)):
+        continue
+    if fmg_global_config.get(search_servcus, {}).get('edit "{}"'.format(service)):
+        continue
+    if fmg_global_config.get(search_servgrp, {}).get('edit "{}"'.format(service)):
+        continue
+    if local_objects[search_servcus].get(search_servcus, {}).get('edit {}'.format(service)):
+        continue
+    if local_objects[search_servgrp].get(search_servgrp, {}).get('edit {}'.format(service)):
+        continue
+    if fmg_global_config.get(search_servcus, {}).get('edit {}'.format(service)):
+        continue
+    if fmg_global_config.get(search_servgrp, {}).get('edit {}'.format(service)):
+        continue
+    missing_service.append(service)
+    print('missing service object: {}'.format(service))
+
+cp_glogal_path = fgt_path / 'config-all-global.txt'
+cp_global_config = parse_file(cp_glogal_path.resolve())
+fmg_global_additions = defaultdict(f)
+if missing_address or missing_service:
+    print('We need global additions...')
+    cp_glogal_path = fgt_path / 'config-all-global.txt'
+    cp_global_config = parse_file(cp_glogal_path.resolve())
+    if missing_address:
+        for address in missing_address:
+            if cp_global_config.get(search_address, {}).get('edit "{}"'.format(address)):
+                fmg_global_additions[search_address]['edit "{}"'.format(address)] = cp_global_config.get(search_address, {}).get('edit "{}"'.format(address))
+        for address in missing_address:
+            if cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address)):
+                fmg_global_additions[search_addrgrp]['edit "{}"'.format(address)] = cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address))
+        # print('Something wrong, can not find defination of address:{}'.format(address))
+    if missing_service:
+        for service in missing_service:
+            if cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service)):
+                fmg_global_additions[search_servcus]['edit "{}"'.format(service)] = cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service))
+        for service in missing_service:
+            if cp_global_config.get(search_servgrp, {}).get('edit "{}"'.format(service)):
+                fmg_global_additions[search_servgrp]['edit "{}"'.format(service)] = cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(service))
+        # print('Something wrong, can not find defination of service:{}'.format(service))
+
+    global_addition_path = fgt_path / '{}global-additions.txt'.format(output_prefix)
+    original_stdout = sys.stdout
+    with open(global_addition_path.resolve(), 'w') as output:
+        sys.stdout = output
+        niceprint(fmg_global_additions, indent=1)
+        sys.stdout = original_stdout
+else:
+    print('All good and no global additions')
+    exit(0)
