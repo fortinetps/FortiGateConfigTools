@@ -91,14 +91,16 @@ class Parser(object):
                 previous_method = method
                 # call parse function according to the verb
                 getattr(Parser, 'parse_' + method)(self, fields)
-            elif previous_method == 'set':      # parse multiline value in set
-                getattr(Parser, 'parse_' + 'set_multiline')(self, fields)
-            elif re.match(r'^\s*#.*', line):    # parse comment line (configuration headers)
+            elif re.match(r'^\s*#.*', line):    # parse comment, you need to parse this before parse multiline value next
+                # but this might cause issue if multiline value happen to startswith a '#' sign
+                # multiline value could be detected by checking if previous line value starts with single or double quotes
+                # will need more time to work on this ....
                 method = 'comment'
                 previous_method = method
                 # call parse function according to the verb
                 getattr(Parser, 'parse_' + method)(self, [line])
-                # getFromDict(self.section_dict, [line])
+            elif previous_method == 'set':      # parse multiline value in set
+                getattr(Parser, 'parse_' + 'set_multiline')(self, fields)
 
         return self.section_dict
 
@@ -158,5 +160,24 @@ def parse_file(path):
 		return conf.section_dict
 
 config = parse_file('/workspaces/FortiGateConfigTools/temp/FGT/config-all.txt')
+
+# search firewall policy with - set global-label "Firewall Management"
+# and comment out this policy
+new_config_firewall_policy = defaultdict(f)
+for pol_id, pol in config['config firewall policy'].items():
+    if not pol_id.startswith('comment'): # skip comment
+        if pol.get('set global-label', [''])[0].startswith('"Firewall Management'):
+            # print('Comment out this pol:{}'.format(pol_id))
+            new_config_firewall_policy[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
+            for k1, v1 in pol.items():
+                if k1.startswith('comment'):    # already a comment
+                    new_config_firewall_policy[k1] = v1
+                else:    
+                    new_config_firewall_policy[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
+            new_config_firewall_policy[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
+            continue
+
+    new_config_firewall_policy[pol_id] = pol
+config['config firewall policy'] = new_config_firewall_policy
 
 niceprint(config, indent=1)
