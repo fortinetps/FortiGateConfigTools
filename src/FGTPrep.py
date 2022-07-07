@@ -164,6 +164,7 @@ def parse_file(path):
 		return conf.section_dict
 
 opts, args = getopt.getopt(sys.argv[1:],'hvi:g:', ['help'])
+version = '20220707'
 fgt_folder = ''
 fmg_global = ''
 output_prefix = 'fmg-'
@@ -360,20 +361,55 @@ if missing_address or missing_service:
     cp_glogal_path = fgt_path / 'config-all-global.txt'
     cp_global_config = parse_file(cp_glogal_path.resolve())
     if missing_address:
-        for address in missing_address:
-            if cp_global_config.get(search_address, {}).get('edit "{}"'.format(address)):
-                fmg_global_additions[search_address]['edit "{}"'.format(address)] = cp_global_config.get(search_address, {}).get('edit "{}"'.format(address))
+        fmg_global_additions[search_address]    # touch "config firewall address" section
+
+        # find missing addrgrp object first
         for address in missing_address:
             if cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address)):
                 fmg_global_additions[search_addrgrp]['edit "{}"'.format(address)] = cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address))
+
+        # we need to calcuate and flatern addrgrp (could be nested) to leaf address object
+        more_addrgrp = True
+        while more_addrgrp:
+            more_addrgrp = False
+            for address in missing_address:
+                if cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address)):
+                    more_addrgrp = True
+                    missing_address.remove(address)
+                    set_member = shlex.split(cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address))['set member'][0])
+                    missing_address.extend(set_member)
+        missing_address = list(sorted(set(missing_address)))
+        
+        # then find all missing address object
+        for address in missing_address:
+            if cp_global_config.get(search_address, {}).get('edit "{}"'.format(address)):
+                fmg_global_additions[search_address]['edit "{}"'.format(address)] = cp_global_config.get(search_address, {}).get('edit "{}"'.format(address))
         # print('Something wrong, can not find defination of address:{}'.format(address))
+
     if missing_service:
-        for service in missing_service:
-            if cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service)):
-                fmg_global_additions[search_servcus]['edit "{}"'.format(service)] = cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service))
+        fmg_global_additions[search_servcus]    # touch "config firewall service custom" section
+
+        # find missing addrgrp object first
         for service in missing_service:
             if cp_global_config.get(search_servgrp, {}).get('edit "{}"'.format(service)):
                 fmg_global_additions[search_servgrp]['edit "{}"'.format(service)] = cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(service))
+
+        # we need to calcuate and flatern addrgrp (could be nested) to leaf address object
+        more_servgrp = True
+        while more_servgrp:
+            more_servgrp = False
+            for service in missing_service:
+                if cp_global_config.get(search_servgrp, {}).get('edit "{}"'.format(service)):
+                    more_servgrp = True
+                    missing_service.remove(service)
+                    set_member = shlex.split(cp_global_config.get(search_servgrp, {}).get('edit "{}"'.format(service))['set member'][0])
+                    missing_service.extend(set_member)
+        missing_service = list(sorted(set(missing_service)))
+        
+        # then find all missing service custom object
+        for service in missing_service:
+            if cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service)):
+                fmg_global_additions[search_servcus]['edit "{}"'.format(service)] = cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service))
         # print('Something wrong, can not find defination of service:{}'.format(service))
 
     global_addition_path = fgt_path / '{}global-additions.txt'.format(output_prefix)
