@@ -305,7 +305,10 @@ fgt_service_list.remove('ALL')
 
 # second, find definition in local configuration files
 # if not found, check FMG global export
-fmg_global_config = parse_file(fmg_path.resolve()).get('config vdom', {}).get('edit FortiGate', {})
+raw_global_config = parse_file(fmg_path.resolve())
+fmg_global_config = raw_global_config.get('config vdom', {}).get('edit FortiGate', {})
+if not fmg_global_config:
+    fmg_global_config = raw_global_config
 # if not found, check CP global from convert file and add to FMG object addition
 search_address = 'config firewall address'
 search_addrgrp = 'config firewall addrgrp'
