@@ -3,6 +3,8 @@ import sys
 import uuid
 import shlex
 import getopt
+import portion
+import ipaddress
 from pathlib import Path
 from collections import defaultdict
 from functools import reduce
@@ -163,17 +165,86 @@ def parse_file(path):
 		conf.parse_text(f)
 		return conf.section_dict
 
-opts, args = getopt.getopt(sys.argv[1:],'hvi:g:', ['help'])
-version = '20220707'
+def str2ranglist(rs):
+    try:
+        rl = [(range(int(r.split(':')[0].split('-')[0]), int(r.split(':')[0].split('-')[1]) + 1) if '-' in r.split(':')[0] else range(int(r.split(':')[0]), int(r.split(':')[0]) + 1) ,
+range(int(r.split(':')[1].split('-')[0]), int(r.split(':')[1].split('-')[1]) +1) if '-' in r.split(':')[1] else range(int(r.split(':')[1]), int(r.split(':')[1]) + 1)) if ':' in r else 
+(range(int(r.split('-')[0]), int(r.split('-')[1]) + 1) if '-' in r else range(int(r), int(r) + 1) , range(1,65536)) for r in rs.split(' ')]
+    except ValueError:
+        return []
+    else:
+        return rl
+
+def process_config(config):
+    # make sure all the required configuration sections exist
+    if config.get('config firewall address') and config.get('config firewall addrgrp') and config.get('config firewall service custom') and config.get('config firewall service group') and config.get('config firewall policy'):
+        # create the corresponding flatten sections
+        config['config firewall address flatten'] = defaultdict(f)
+        config['config firewall addrgrp flatten'] = defaultdict(f)
+        config['config firewall service custom flatten'] = defaultdict(f)
+        config['config firewall service group flatten'] = defaultdict(f)
+        config['config firewall policy flatten'] = defaultdict(f)
+
+        # flatten config firewall address (only for subnet and iprannge)
+        for name, value in config['config firewall address'].items():
+            if 'set subnet' in value:
+                ipaddr0 = ipaddress.IPv4Network(value['set subnet'][0].replace(' ','/'))
+                config['config firewall address flatten'][name] = range(int(ipaddr0[0]), int(ipaddr0[-1]) + 1)
+            elif 'set start-ip' in value:
+                ipaddr1 = ipaddress.ip_network(value['set start-ip'][0])
+                ipaddr2 = ipaddress.ip_network(value['set end-ip'][0])
+                config['config firewall address flatten'][name] = range(int(ipaddr1[0]), int(ipaddr2[0]) + 1)
+            else:
+                config['config firewall address flatten'][name] = range(0, 2^32)
+
+        # flatten config firewall addrgrp
+        for name, value in config['config firewall addrgrp'].items():
+            member_list = shlex.split(value['set member'][0])
+            # flatten nested addrgrp member if exists
+            addrgrp_member = True
+            while addrgrp_member:
+                addrgrp_member = False
+                for member in member_list:
+                    if member in config['config firewall addrgrp'].items():
+                        addrgrp_member = True
+                        member_list.remove(member)
+                        member_list.extend(shlex.split(config['config firewall addrgrp'][member]['set member'][0]))
+                        break
+
+            # convert member list to list of ranges
+            config['config firewall addrgrp flatten'][name] = [config['config firewall address flatten']['edit "{}"'.format(member)] for member in member_list]
+
+        # flatten config firewall service custom (only for tcp/udp/icmp)
+        for name, value in config['config firewall address'].items():
+            if 'set tcp-portrange' in value or 'set udp-portrange' in value:
+                tcp_range_list = str2ranglist(value.get('set tcp-portrange', [''])[0])
+                udp_range_list = str2ranglist(value.get('set udp-portrange', [''])[0])
+                config['config firewall address flatten'][name]['tcp range list'] = tcp_range_list
+                config['config firewall address flatten'][name]['udp range list'] = udp_range_list
+            elif 'set protocol' in value and 'ICMP' in value['set protocol']:
+                icmp_type = value.get('set icmptype', ['0'])[0]
+                icmp_code = value.get('set icmpcode', ['0'])[0]
+                config['config firewall address flatten'][name]['icmp type'] = icmp_type
+                config['config firewall address flatten'][name]['icmp code'] = icmp_code
+            else:
+                # config['config firewall address flatten'][name] = range(0, 2^32)
+
+            
+            # flatten_member_list = []
+            # set_member = shlex.split(cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address))['set member'][0])
+
+
+opts, args = getopt.getopt(sys.argv[1:],'hvi:g:p:', ['help'])
+version = '20220713'
 fgt_folder = ''
 fmg_global = ''
-output_prefix = 'fmg-'
+output_prefix = 'fmg'
 verbose = False
 
 for opt, arg in opts:
     if opt in ('-h', '--help'):
         print('***********************************************************************************')
-        print('Usage: python FGTPrep.py -i <FGT configuration folder> -g <FMG global>')
+        print('Usage: python FGTPrep.py -i <FGT configuration folder> -g <FMG global file> -p <Output Prefix>')
         print('')
         print('***********************************************************************************')
     elif opt == '-v':
@@ -182,6 +253,8 @@ for opt, arg in opts:
         fgt_folder = arg
     elif opt == '-g':
         fmg_global = arg
+    elif opt == '-p':
+        output_prefix = arg
 
 fgt_path = Path(fgt_folder)
 fmg_path = Path(fmg_global)
@@ -191,6 +264,10 @@ if not fgt_path.is_dir:
 if not fmg_path.is_file:
     print('Please check and specify correct FMG configuration file')
     exit(2)
+
+# load config-all.txt
+config_all = parse_file(fgt_path / 'config-all.txt')
+process_config(config_all)
 
 section_list = ['config firewall address', 'config firewall addrgrp', 'config firewall service custom', 'config firewall service group', 'config firewall policy']
 filter_list = ['-'.join(x.split(' ')) for x in section_list]
@@ -209,12 +286,19 @@ for section in section_list:
             section_config = parse_file(file.resolve())
             for k, v in section_config[section].items():
                 local_objects[section][section][k] = v
-    combined_file = fgt_path / '{}{}.txt'.format(output_prefix, '-'.join(section.split(' ')))
+    combined_file = fgt_path / '{}-{}.txt'.format(output_prefix, '-'.join(section.split(' ')))
     original_stdout = sys.stdout
     with open(combined_file.resolve(), 'w') as output:
         sys.stdout = output
         niceprint(local_objects[section], indent=1)
         sys.stdout = original_stdout
+
+# convert/flatten srcaddr/dstaddr/service to list of ranges
+# for better check the if one policy shadow/cover another
+firewall_policy_flatten = defaultdict(f)
+for pol_id, pol in local_objects['config firewall policy']['config firewall policy'].items():
+    if not pol_id.startswith('comment'): # skip comment
+        firewall_policy_flatten[pol_id] = flatten(pol)
 
 # fixing/preparing firewall policy
 # search firewall policy with - set global-label "Firewall Management"
@@ -278,7 +362,7 @@ if last_deny_pol:
                             new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
                     new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
 
-firewall_policy_fix = fgt_path / '{}{}-fix.txt'.format(output_prefix, '-'.join('config firewall policy'.split(' ')))
+firewall_policy_fix = fgt_path / '{}-{}-fix.txt'.format(output_prefix, '-'.join('config firewall policy'.split(' ')))
 original_stdout = sys.stdout
 with open(firewall_policy_fix.resolve(), 'w') as output:
     sys.stdout = output
@@ -299,9 +383,13 @@ for pol_id, pol in new_config_firewall_policy2.items():
         fgt_service_list.extend(set_service)
 
 fgt_address_list = list(sorted(set(fgt_address_list)))
-fgt_address_list.remove('all')
+fgt_address_set = set(fgt_address_list)
+fgt_address_set.discard('all')
+fgt_address_list = list(fgt_address_set)
 fgt_service_list = list(sorted(set(fgt_service_list)))
-fgt_service_list.remove('ALL')
+fgt_service_set = set(fgt_service_list)
+fgt_service_set.discard('ALL')
+fgt_service_list = list(fgt_service_set)
 
 # second, find definition in local configuration files
 # if not found, check FMG global export
@@ -415,7 +503,7 @@ if missing_address or missing_service:
                 fmg_global_additions[search_servcus]['edit "{}"'.format(service)] = cp_global_config.get(search_servcus, {}).get('edit "{}"'.format(service))
         # print('Something wrong, can not find defination of service:{}'.format(service))
 
-    global_addition_path = fgt_path / '{}global-additions.txt'.format(output_prefix)
+    global_addition_path = fgt_path / '{}-global-additions.txt'.format(output_prefix)
     original_stdout = sys.stdout
     with open(global_addition_path.resolve(), 'w') as output:
         sys.stdout = output
