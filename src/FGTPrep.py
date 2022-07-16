@@ -175,6 +175,30 @@ range(int(r.split(':')[1].split('-')[0]), int(r.split(':')[1].split('-')[1]) +1)
     else:
         return rl
 
+def port2portion(rs):   # ignore_source
+    try:
+        pl = [portion.closedopen(int(r.split(':')[0].split('-')[0]), int(r.split(':')[0].split('-')[1]) + 1) if '-' in r.split(':')[0] else portion.closedopen(int(r.split(':')[0]), int(r.split(':')[0]) + 1) if ':' in r else 
+portion.closedopen(int(r.split('-')[0]), int(r.split('-')[1]) + 1) if '-' in r else portion.closedopen(int(r), int(r) + 1) for r in rs.split(' ')]
+    except ValueError:
+        return portion.empty()
+    else:
+        pr = portion.empty()
+        for p in pl:
+            pr = pr.union(p)
+        return pr
+
+def str2portion(rs):
+    try:
+        rl = [(range(int(r.split(':')[0].split('-')[0]), int(r.split(':')[0].split('-')[1]) + 1) if '-' in r.split(':')[0] else range(int(r.split(':')[0]), int(r.split(':')[0]) + 1) ,
+range(int(r.split(':')[1].split('-')[0]), int(r.split(':')[1].split('-')[1]) +1) if '-' in r.split(':')[1] else range(int(r.split(':')[1]), int(r.split(':')[1]) + 1)) if ':' in r else 
+(range(int(r.split('-')[0]), int(r.split('-')[1]) + 1) if '-' in r else range(int(r), int(r) + 1) , range(1,65536)) for r in rs.split(' ')]
+    except ValueError:
+        return []
+    else:
+        return rl
+
+
+
 def process_config(config):
     # make sure all the required configuration sections exist
     if config.get('config firewall address') and config.get('config firewall addrgrp') and config.get('config firewall service custom') and config.get('config firewall service group') and config.get('config firewall policy'):
@@ -189,13 +213,13 @@ def process_config(config):
         for name, value in config['config firewall address'].items():
             if 'set subnet' in value:
                 ipaddr0 = ipaddress.IPv4Network(value['set subnet'][0].replace(' ','/'))
-                config['config firewall address flatten'][name] = range(int(ipaddr0[0]), int(ipaddr0[-1]) + 1)
+                config['config firewall address flatten'][name] = portion.closedopen(int(ipaddr0[0]), int(ipaddr0[-1]) + 1)
             elif 'set start-ip' in value:
                 ipaddr1 = ipaddress.ip_network(value['set start-ip'][0])
                 ipaddr2 = ipaddress.ip_network(value['set end-ip'][0])
-                config['config firewall address flatten'][name] = range(int(ipaddr1[0]), int(ipaddr2[0]) + 1)
+                config['config firewall address flatten'][name] = portion.closedopen(int(ipaddr1[0]), int(ipaddr2[0]) + 1)
             else:
-                config['config firewall address flatten'][name] = range(0, 2^32)
+                config['config firewall address flatten'][name] = portion.closedopen(0, 2^32)
 
         # flatten config firewall addrgrp
         for name, value in config['config firewall addrgrp'].items():
@@ -205,34 +229,55 @@ def process_config(config):
             while addrgrp_member:
                 addrgrp_member = False
                 for member in member_list:
-                    if member in config['config firewall addrgrp'].items():
+                    if 'edit "{}"'.format(member) in config['config firewall addrgrp']:
+                        addrgrp_member = True
+                        member_list.extend(shlex.split(config['config firewall addrgrp']['edit "{}"'.format(member)]['set member'][0]))
+                        break
+                if addrgrp_member:
+                    member_list.remove(member)
+
+            # convert member list to list of ranges
+            pl = [config['config firewall address flatten']['edit "{}"'.format(member)] for member in member_list]
+            pr = portion.empty()
+            for p in pl:
+                pr = pr.union(p)
+            config['config firewall addrgrp flatten'][name] = pr
+
+        # flatten config firewall service custom (only for tcp/udp/icmp)
+        for name, value in config['config firewall service custom'].items():
+            if 'set tcp-portrange' in value or 'set udp-portrange' in value:
+                tcp_range_list = port2portion(value.get('set tcp-portrange', [''])[0])
+                udp_range_list = port2portion(value.get('set udp-portrange', [''])[0])
+                config['config firewall service custom flatten'][name]['tcp range list'] = tcp_range_list
+                config['config firewall service custom flatten'][name]['udp range list'] = udp_range_list
+            elif 'set protocol' in value and 'ICMP' in value['set protocol']:
+                icmp_type = value.get('set icmptype', ['0'])[0]
+                # icmp_code = value.get('set icmpcode', ['0'])[0]
+                config['config firewall service custom flatten'][name]['icmp type'] = portion.singleton(int(icmp_type))
+            else:
+                config['config firewall service custom flatten'][name]['tcp range list'] = portion.closedopen(1, 65536)
+                config['config firewall service custom flatten'][name]['udp range list'] = portion.closedopen(1, 65536)
+                config['config firewall service custom flatten'][name]['icmp type'] = portion.singleton(0)
+
+        # flatten config firewall service group
+        for name, value in config['config firewall service group'].items():
+            member_list = shlex.split(value['set member'][0])
+            # flatten nested addrgrp member if exists
+            addrgrp_member = True
+            while addrgrp_member:
+                addrgrp_member = False
+                for member in member_list:
+                    if member in config['config firewall service group'].items():
                         addrgrp_member = True
                         member_list.remove(member)
-                        member_list.extend(shlex.split(config['config firewall addrgrp'][member]['set member'][0]))
+                        member_list.extend(shlex.split(config['config firewall service group'][member]['set member'][0]))
                         break
 
             # convert member list to list of ranges
-            config['config firewall addrgrp flatten'][name] = [config['config firewall address flatten']['edit "{}"'.format(member)] for member in member_list]
-
-        # flatten config firewall service custom (only for tcp/udp/icmp)
-        for name, value in config['config firewall address'].items():
-            if 'set tcp-portrange' in value or 'set udp-portrange' in value:
-                tcp_range_list = str2ranglist(value.get('set tcp-portrange', [''])[0])
-                udp_range_list = str2ranglist(value.get('set udp-portrange', [''])[0])
-                config['config firewall address flatten'][name]['tcp range list'] = tcp_range_list
-                config['config firewall address flatten'][name]['udp range list'] = udp_range_list
-            elif 'set protocol' in value and 'ICMP' in value['set protocol']:
-                icmp_type = value.get('set icmptype', ['0'])[0]
-                icmp_code = value.get('set icmpcode', ['0'])[0]
-                config['config firewall address flatten'][name]['icmp type'] = icmp_type
-                config['config firewall address flatten'][name]['icmp code'] = icmp_code
-            else:
-                # config['config firewall address flatten'][name] = range(0, 2^32)
-
+            config['config firewall service group flatten'][name]['tcp range list'] = sum([config['config firewall service custom flatten']['edit "{}"'.format(member)].get('tcp range list', []) for member in member_list], [])
+            config['config firewall service group flatten'][name]['udp range list'] = sum([config['config firewall service custom flatten']['edit "{}"'.format(member)].get('udp range list', []) for member in member_list], [])
+            config['config firewall service group flatten'][name]['icmp type'] = sum([config['config firewall service custom flatten']['edit "{}"'.format(member)].get('icmp type', []) for member in member_list], [])
             
-            # flatten_member_list = []
-            # set_member = shlex.split(cp_global_config.get(search_addrgrp, {}).get('edit "{}"'.format(address))['set member'][0])
-
 
 opts, args = getopt.getopt(sys.argv[1:],'hvi:g:p:', ['help'])
 version = '20220713'
