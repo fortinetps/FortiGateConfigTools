@@ -267,17 +267,70 @@ def process_config(config):
             while addrgrp_member:
                 addrgrp_member = False
                 for member in member_list:
-                    if member in config['config firewall service group'].items():
+                    if 'edit "{}"'.format(member) in config['config firewall service group'].items():
                         addrgrp_member = True
                         member_list.remove(member)
-                        member_list.extend(shlex.split(config['config firewall service group'][member]['set member'][0]))
+                        member_list.extend(shlex.split(config['config firewall service group']['edit "{}"'.format(member)]['set member'][0]))
                         break
 
             # convert member list to list of ranges
-            config['config firewall service group flatten'][name]['tcp range list'] = sum([config['config firewall service custom flatten']['edit "{}"'.format(member)].get('tcp range list', []) for member in member_list], [])
-            config['config firewall service group flatten'][name]['udp range list'] = sum([config['config firewall service custom flatten']['edit "{}"'.format(member)].get('udp range list', []) for member in member_list], [])
-            config['config firewall service group flatten'][name]['icmp type'] = sum([config['config firewall service custom flatten']['edit "{}"'.format(member)].get('icmp type', []) for member in member_list], [])
-            
+            tpl = [config['config firewall service custom flatten']['edit "{}"'.format(member)].get('tcp range list', portion.empty()) for member in member_list]
+            upl = [config['config firewall service custom flatten']['edit "{}"'.format(member)].get('udp range list', portion.empty()) for member in member_list]
+            ipl = [config['config firewall service custom flatten']['edit "{}"'.format(member)].get('icmp type', portion.empty()) for member in member_list]
+            pr = portion.empty()
+            for p in tpl:
+                pr = pr.union(p)
+            config['config firewall service group flatten'][name]['tcp range list'] = pr
+            pr = portion.empty()
+            for p in upl:
+                pr = pr.union(p)
+            config['config firewall service group flatten'][name]['udp range list'] = pr
+            pr = portion.empty()
+            for p in ipl:
+                pr = pr.union(p)
+            config['config firewall service group flatten'][name]['icmp type'] = pr
+
+        # flatten config firewall policy
+        for name, value in config['config firewall policy'].items():
+            if not name.startswith('comment'): # skip comment
+                pol = defaultdict(f)
+                pol = value
+
+                # flatten "set srcaddr"
+                srcaddr_list = shlex.split(value['set srcaddr'][0])
+                srcaddr_flatten = portion.empty()
+                for addr in srcaddr_list:
+                    srcaddr_flatten = srcaddr_flatten.union(config['config firewall address flatten'].get('edit "{}"'.format(addr), portion.empty()))
+                    srcaddr_flatten = srcaddr_flatten.union(config['config firewall addrgrp flatten'].get('edit "{}"'.format(addr), portion.empty()))
+                pol['set srcaddr'] = srcaddr_flatten
+
+                # flatten "set dstaddr"
+                dstaddr_list = shlex.split(value['set dstaddr'][0])
+                dstaddr_flatten = portion.empty()
+                for addr in dstaddr_list:
+                    dstaddr_flatten = dstaddr_flatten.union(config['config firewall address flatten'].get('edit "{}"'.format(addr), portion.empty()))
+                    dstaddr_flatten = dstaddr_flatten.union(config['config firewall addrgrp flatten'].get('edit "{}"'.format(addr), portion.empty()))
+                pol['set dstaddr'] = dstaddr_flatten
+
+                # flatten "set service"
+                service_list = shlex.split(value['set service'][0])
+                tcp_flatten = portion.empty()
+                udp_flatten = portion.empty()
+                icmp_flatten = portion.empty()
+                for service in service_list:
+                    tcp_flatten = tcp_flatten.union(config['config firewall service custom flatten'].get('edit "{}"'.format(service), {}).get('tcp range list', portion.empty()))
+                    tcp_flatten = tcp_flatten.union(config['config firewall service group flatten' ].get('edit "{}"'.format(service), {}).get('tcp range list', portion.empty()))
+                    udp_flatten = udp_flatten.union(config['config firewall service custom flatten'].get('edit "{}"'.format(service), {}).get('udp range list', portion.empty()))
+                    udp_flatten = udp_flatten.union(config['config firewall service group flatten' ].get('edit "{}"'.format(service), {}).get('udp range list', portion.empty()))
+                    icmp_flatten = icmp_flatten.union(config['config firewall service custom flatten'].get('edit "{}"'.format(service), {}).get('icmp type', portion.empty()))
+                    icmp_flatten = icmp_flatten.union(config['config firewall service group flatten' ].get('edit "{}"'.format(service), {}).get('icmp type', portion.empty()))
+                service_flatten = defaultdict(f)
+                service_flatten['tcp range list'] = tcp_flatten
+                service_flatten['udp range list'] = udp_flatten
+                service_flatten['icmp type'] = icmp_flatten
+                pol['set service'] = service_flatten
+                
+                config['config firewall policy flatten'][name] = pol
 
 opts, args = getopt.getopt(sys.argv[1:],'hvi:g:p:', ['help'])
 version = '20220713'
