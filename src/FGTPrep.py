@@ -3,7 +3,6 @@ import sys
 import uuid
 import shlex
 import getopt
-import portion
 import ipaddress
 from pathlib import Path
 from collections import defaultdict
@@ -71,6 +70,8 @@ class Parser(object):
             if self.previous_set_headers == {} and self.config_header[0] == 'config vdom':
                 getFromDict(self.section_dict, ['config global'])
             getFromDict(self.section_dict, self.config_header)
+        if len(self.config_header) < 2:
+            print("it seems like next here is incorrect")
         self.config_header.pop()
 
     # parse "end" (for "config" or "edit")
@@ -160,183 +161,17 @@ def niceprint(d, offset = 0, indent = 4):
                     print ('{0}{1}'.format(empty_str.rjust(offset), ' '.join(fields)))  # print unset without value
 
 def parse_file(path):
-	with open(path) as f:
+	with open(path, encoding='utf-8-sig') as f:
 		conf = Parser()
 		conf.parse_text(f)
 		return conf.section_dict
 
-def str2ranglist(rs):
-    try:
-        rl = [(range(int(r.split(':')[0].split('-')[0]), int(r.split(':')[0].split('-')[1]) + 1) if '-' in r.split(':')[0] else range(int(r.split(':')[0]), int(r.split(':')[0]) + 1) ,
-range(int(r.split(':')[1].split('-')[0]), int(r.split(':')[1].split('-')[1]) +1) if '-' in r.split(':')[1] else range(int(r.split(':')[1]), int(r.split(':')[1]) + 1)) if ':' in r else 
-(range(int(r.split('-')[0]), int(r.split('-')[1]) + 1) if '-' in r else range(int(r), int(r) + 1) , range(1,65536)) for r in rs.split(' ')]
-    except ValueError:
-        return []
-    else:
-        return rl
-
-def port2portion(rs):   # ignore_source
-    try:
-        pl = [portion.closedopen(int(r.split(':')[0].split('-')[0]), int(r.split(':')[0].split('-')[1]) + 1) if '-' in r.split(':')[0] else portion.closedopen(int(r.split(':')[0]), int(r.split(':')[0]) + 1) if ':' in r else 
-portion.closedopen(int(r.split('-')[0]), int(r.split('-')[1]) + 1) if '-' in r else portion.closedopen(int(r), int(r) + 1) for r in rs.split(' ')]
-    except ValueError:
-        return portion.empty()
-    else:
-        pr = portion.empty()
-        for p in pl:
-            pr = pr.union(p)
-        return pr
-
-def str2portion(rs):
-    try:
-        rl = [(range(int(r.split(':')[0].split('-')[0]), int(r.split(':')[0].split('-')[1]) + 1) if '-' in r.split(':')[0] else range(int(r.split(':')[0]), int(r.split(':')[0]) + 1) ,
-range(int(r.split(':')[1].split('-')[0]), int(r.split(':')[1].split('-')[1]) +1) if '-' in r.split(':')[1] else range(int(r.split(':')[1]), int(r.split(':')[1]) + 1)) if ':' in r else 
-(range(int(r.split('-')[0]), int(r.split('-')[1]) + 1) if '-' in r else range(int(r), int(r) + 1) , range(1,65536)) for r in rs.split(' ')]
-    except ValueError:
-        return []
-    else:
-        return rl
-
-
-
-def process_config(config):
-    # make sure all the required configuration sections exist
-    if config.get('config firewall address') and config.get('config firewall addrgrp') and config.get('config firewall service custom') and config.get('config firewall service group') and config.get('config firewall policy'):
-        # create the corresponding flatten sections
-        config['config firewall address flatten'] = defaultdict(f)
-        config['config firewall addrgrp flatten'] = defaultdict(f)
-        config['config firewall service custom flatten'] = defaultdict(f)
-        config['config firewall service group flatten'] = defaultdict(f)
-        config['config firewall policy flatten'] = defaultdict(f)
-
-        # flatten config firewall address (only for subnet and iprannge)
-        for name, value in config['config firewall address'].items():
-            if 'set subnet' in value:
-                ipaddr0 = ipaddress.IPv4Network(value['set subnet'][0].replace(' ','/'))
-                config['config firewall address flatten'][name] = portion.closedopen(int(ipaddr0[0]), int(ipaddr0[-1]) + 1)
-            elif 'set start-ip' in value:
-                ipaddr1 = ipaddress.ip_network(value['set start-ip'][0])
-                ipaddr2 = ipaddress.ip_network(value['set end-ip'][0])
-                config['config firewall address flatten'][name] = portion.closedopen(int(ipaddr1[0]), int(ipaddr2[0]) + 1)
-            else:
-                config['config firewall address flatten'][name] = portion.closedopen(0, 2^32)
-
-        # flatten config firewall addrgrp
-        for name, value in config['config firewall addrgrp'].items():
-            member_list = shlex.split(value['set member'][0])
-            # flatten nested addrgrp member if exists
-            addrgrp_member = True
-            while addrgrp_member:
-                addrgrp_member = False
-                for member in member_list:
-                    if 'edit "{}"'.format(member) in config['config firewall addrgrp']:
-                        addrgrp_member = True
-                        member_list.extend(shlex.split(config['config firewall addrgrp']['edit "{}"'.format(member)]['set member'][0]))
-                        break
-                if addrgrp_member:
-                    member_list.remove(member)
-
-            # convert member list to list of ranges
-            pl = [config['config firewall address flatten']['edit "{}"'.format(member)] for member in member_list]
-            pr = portion.empty()
-            for p in pl:
-                pr = pr.union(p)
-            config['config firewall addrgrp flatten'][name] = pr
-
-        # flatten config firewall service custom (only for tcp/udp/icmp)
-        for name, value in config['config firewall service custom'].items():
-            if 'set tcp-portrange' in value or 'set udp-portrange' in value:
-                tcp_range_list = port2portion(value.get('set tcp-portrange', [''])[0])
-                udp_range_list = port2portion(value.get('set udp-portrange', [''])[0])
-                config['config firewall service custom flatten'][name]['tcp range list'] = tcp_range_list
-                config['config firewall service custom flatten'][name]['udp range list'] = udp_range_list
-            elif 'set protocol' in value and 'ICMP' in value['set protocol']:
-                icmp_type = value.get('set icmptype', ['0'])[0]
-                # icmp_code = value.get('set icmpcode', ['0'])[0]
-                config['config firewall service custom flatten'][name]['icmp type'] = portion.singleton(int(icmp_type))
-            else:
-                config['config firewall service custom flatten'][name]['tcp range list'] = portion.closedopen(1, 65536)
-                config['config firewall service custom flatten'][name]['udp range list'] = portion.closedopen(1, 65536)
-                config['config firewall service custom flatten'][name]['icmp type'] = portion.singleton(0)
-
-        # flatten config firewall service group
-        for name, value in config['config firewall service group'].items():
-            member_list = shlex.split(value['set member'][0])
-            # flatten nested addrgrp member if exists
-            addrgrp_member = True
-            while addrgrp_member:
-                addrgrp_member = False
-                for member in member_list:
-                    if 'edit "{}"'.format(member) in config['config firewall service group'].items():
-                        addrgrp_member = True
-                        member_list.remove(member)
-                        member_list.extend(shlex.split(config['config firewall service group']['edit "{}"'.format(member)]['set member'][0]))
-                        break
-
-            # convert member list to list of ranges
-            tpl = [config['config firewall service custom flatten']['edit "{}"'.format(member)].get('tcp range list', portion.empty()) for member in member_list]
-            upl = [config['config firewall service custom flatten']['edit "{}"'.format(member)].get('udp range list', portion.empty()) for member in member_list]
-            ipl = [config['config firewall service custom flatten']['edit "{}"'.format(member)].get('icmp type', portion.empty()) for member in member_list]
-            pr = portion.empty()
-            for p in tpl:
-                pr = pr.union(p)
-            config['config firewall service group flatten'][name]['tcp range list'] = pr
-            pr = portion.empty()
-            for p in upl:
-                pr = pr.union(p)
-            config['config firewall service group flatten'][name]['udp range list'] = pr
-            pr = portion.empty()
-            for p in ipl:
-                pr = pr.union(p)
-            config['config firewall service group flatten'][name]['icmp type'] = pr
-
-        # flatten config firewall policy
-        for name, value in config['config firewall policy'].items():
-            if not name.startswith('comment'): # skip comment
-                pol = defaultdict(f)
-                pol = value
-
-                # flatten "set srcaddr"
-                srcaddr_list = shlex.split(value['set srcaddr'][0])
-                srcaddr_flatten = portion.empty()
-                for addr in srcaddr_list:
-                    srcaddr_flatten = srcaddr_flatten.union(config['config firewall address flatten'].get('edit "{}"'.format(addr), portion.empty()))
-                    srcaddr_flatten = srcaddr_flatten.union(config['config firewall addrgrp flatten'].get('edit "{}"'.format(addr), portion.empty()))
-                pol['set srcaddr'] = srcaddr_flatten
-
-                # flatten "set dstaddr"
-                dstaddr_list = shlex.split(value['set dstaddr'][0])
-                dstaddr_flatten = portion.empty()
-                for addr in dstaddr_list:
-                    dstaddr_flatten = dstaddr_flatten.union(config['config firewall address flatten'].get('edit "{}"'.format(addr), portion.empty()))
-                    dstaddr_flatten = dstaddr_flatten.union(config['config firewall addrgrp flatten'].get('edit "{}"'.format(addr), portion.empty()))
-                pol['set dstaddr'] = dstaddr_flatten
-
-                # flatten "set service"
-                service_list = shlex.split(value['set service'][0])
-                tcp_flatten = portion.empty()
-                udp_flatten = portion.empty()
-                icmp_flatten = portion.empty()
-                for service in service_list:
-                    tcp_flatten = tcp_flatten.union(config['config firewall service custom flatten'].get('edit "{}"'.format(service), {}).get('tcp range list', portion.empty()))
-                    tcp_flatten = tcp_flatten.union(config['config firewall service group flatten' ].get('edit "{}"'.format(service), {}).get('tcp range list', portion.empty()))
-                    udp_flatten = udp_flatten.union(config['config firewall service custom flatten'].get('edit "{}"'.format(service), {}).get('udp range list', portion.empty()))
-                    udp_flatten = udp_flatten.union(config['config firewall service group flatten' ].get('edit "{}"'.format(service), {}).get('udp range list', portion.empty()))
-                    icmp_flatten = icmp_flatten.union(config['config firewall service custom flatten'].get('edit "{}"'.format(service), {}).get('icmp type', portion.empty()))
-                    icmp_flatten = icmp_flatten.union(config['config firewall service group flatten' ].get('edit "{}"'.format(service), {}).get('icmp type', portion.empty()))
-                service_flatten = defaultdict(f)
-                service_flatten['tcp range list'] = tcp_flatten
-                service_flatten['udp range list'] = udp_flatten
-                service_flatten['icmp type'] = icmp_flatten
-                pol['set service'] = service_flatten
-                
-                config['config firewall policy flatten'][name] = pol
-
-opts, args = getopt.getopt(sys.argv[1:],'hvi:g:p:', ['help'])
-version = '20220713'
+opts, args = getopt.getopt(sys.argv[1:],'hvi:g:p:', ['help', 'setmember'])
+version = '20220719'
 fgt_folder = ''
 fmg_global = ''
 output_prefix = 'fmg'
+set_member = False  # for addrgrp/service group, use "append member" by default
 verbose = False
 
 for opt, arg in opts:
@@ -345,8 +180,11 @@ for opt, arg in opts:
         print('Usage: python FGTPrep.py -i <FGT configuration folder> -g <FMG global file> -p <Output Prefix>')
         print('')
         print('***********************************************************************************')
+        exit(0)
     elif opt == '-v':
         verbose = True
+    elif opt == '--setmember':
+        set_member = True
     elif opt == '-i':
         fgt_folder = arg
     elif opt == '-g':
@@ -364,8 +202,7 @@ if not fmg_path.is_file:
     exit(2)
 
 # load config-all.txt
-config_all = parse_file(fgt_path / 'config-all.txt')
-process_config(config_all)
+# config_all = parse_file(fgt_path / 'config-all.txt')
 
 section_list = ['config firewall address', 'config firewall addrgrp', 'config firewall service custom', 'config firewall service group', 'config firewall policy']
 filter_list = ['-'.join(x.split(' ')) for x in section_list]
@@ -383,6 +220,9 @@ for section in section_list:
         if '-'.join(section.split(' ')) in file.stem:
             section_config = parse_file(file.resolve())
             for k, v in section_config[section].items():
+                if not set_member and 'set member' in v:    # change "set member" to "append member"
+                    v['append member'] = v['set member']
+                    del v['set member']
                 local_objects[section][section][k] = v
     combined_file = fgt_path / '{}-{}.txt'.format(output_prefix, '-'.join(section.split(' ')))
     original_stdout = sys.stdout
@@ -391,20 +231,17 @@ for section in section_list:
         niceprint(local_objects[section], indent=1)
         sys.stdout = original_stdout
 
-# convert/flatten srcaddr/dstaddr/service to list of ranges
-# for better check the if one policy shadow/cover another
-firewall_policy_flatten = defaultdict(f)
-for pol_id, pol in local_objects['config firewall policy']['config firewall policy'].items():
-    if not pol_id.startswith('comment'): # skip comment
-        firewall_policy_flatten[pol_id] = flatten(pol)
-
 # fixing/preparing firewall policy
 # search firewall policy with - set global-label "Firewall Management"
 # and comment out this policy
 new_config_firewall_policy1 = defaultdict(f)
 for pol_id, pol in local_objects['config firewall policy']['config firewall policy'].items():
     if not pol_id.startswith('comment'): # skip comment
-        if pol.get('set global-label', [''])[0].startswith('"Firewall Management'):
+        # after exam some converted policy, it seems to me we only need to comment those "Firewall Management" policy
+        # if the srcintf == dstintf and srcaddr == dstaddr
+        if (pol.get('set global-label', [''])[0].startswith('"Firewall Management') and 
+        pol.get('set srcintf', ['']) == pol.get('set dstintf', ['']) and
+        pol.get('set srcaddr', ['']) == pol.get('set dstaddr', [''])):
             new_config_firewall_policy1[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
             for k1, v1 in pol.items():
                 if k1.startswith('comment'):    # already a comment
