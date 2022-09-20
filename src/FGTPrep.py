@@ -166,6 +166,34 @@ def parse_file(path):
 		conf.parse_text(f)
 		return conf.section_dict
 
+
+# config_vip = parse_file("/workspaces/FortiGateConfigTools/temp/fbs01mds01-02-05-config-firewall-vip.txt")
+# error_log = []
+# vip_list = []
+# for name, vip in config_vip['config firewall vip'].items():
+#     if name.startswith('comment'):
+#         continue
+#     vip1 = [name, vip.get('set extip')[0], vip.get('set mappedip')[0]]
+#     for vip2 in vip_list:
+#         if vip1[1:] == vip2[1:]: # duplicate vip, could be merged
+#             print('duplicate vip, could be merged? {} - {}'.format(vip1[0], vip2[0]))
+#         elif vip1[::-1][0:2] == vip2[1:]: # reverse vip, could be a problem
+#             print('reverse vip, could be a problem? {} - {}'.format(vip1[0], vip2[0]))
+#     vip_list.append(vip1)
+#     if vip.get('set src-filter'):
+#         src_filter = vip['set src-filter'][0]
+#         src_filter_list = src_filter.split(' ')
+#         uni_src_filter_list = list(set(src_filter_list))
+#         if len(src_filter_list) != len(uni_src_filter_list):
+#             error_log.append('for vip:{}, before dedup:{}, after dedup:{}'.format(name, len(src_filter_list), len(uni_src_filter_list)))
+#             src_filter = ' '.join(uni_src_filter_list)
+#             vip['set src-filter'][0] = src_filter
+# # niceprint(config_vip, indent=1)
+# # print('#####################################################################################')
+# # for error in error_log:
+# #     print(error)
+# exit(0)
+
 opts, args = getopt.getopt(sys.argv[1:],'hvi:g:p:', ['help', 'setmember'])
 version = '20220719'
 fgt_folder = ''
@@ -173,6 +201,7 @@ fmg_global = ''
 output_prefix = 'fmg'
 set_member = False  # for addrgrp/service group, use "append member" by default
 verbose = False
+
 
 for opt, arg in opts:
     if opt in ('-h', '--help'):
@@ -203,6 +232,8 @@ if not fmg_path.is_file:
 
 # load config-all.txt
 # config_all = parse_file(fgt_path / 'config-all.txt')
+
+# config_vip = parse_file("C:\Users\dyao\fortinet\FortiGateConfigTools\temp\05-fbs02mds-config-firewall-vip.txt")
 
 section_list = ['config firewall address', 'config firewall addrgrp', 'config firewall service custom', 'config firewall service group', 'config firewall policy']
 filter_list = ['-'.join(x.split(' ')) for x in section_list]
@@ -260,42 +291,44 @@ for pol_id, pol in local_objects['config firewall policy']['config firewall poli
 # add "set profile-group "g.JPMC.SecProf""
 for pol_id, pol in new_config_firewall_policy1.items():
     if not pol_id.startswith('comment'): # skip comment
-        if pol.get('set logtraffic', [''])[0] == 'all':
+        if pol.get('set logtraffic', [''])[0] == 'all' and pol.get('set action', [''])[0] == 'accept':  # not for set action deny rule
             pol['set logtraffic-start'] = ['enable']
             pol['set utm-status']       = ['enable']
             pol['set profile-type']     = ['group']
             pol['set profile-group']    = ['"g.JPMC.SecProf"']
 
 # find deny policies (mostly 2 of them but could be more), and comment out the last one and move other to the bottom
-new_config_firewall_policy2 = defaultdict(f)
-for pol_id, pol in new_config_firewall_policy1.items():
-    if not pol_id.startswith('comment'): # skip comment
-        if pol.get('set action', [''])[0] != 'deny':
-            new_config_firewall_policy2[pol_id] = pol
-    else:
-        new_config_firewall_policy2[pol_id] = pol
-
+# DY: don't move regular deny policies, keep their positions
 last_deny_pol = ()
-for pol in list(new_config_firewall_policy1.items())[::-1]:
+for pol in list(new_config_firewall_policy1.items())[::-1]: # reverse policy list to find last deny rule faster
     if not pol[0].startswith('comment'): # skip comment
-        if pol[1].get('set action', [''])[0] == 'deny':
+        if pol[1].get('set action', [''])[0] == 'deny' and \
+           pol[1].get('set srcintf', [''])[0] == '"any"' and \
+           pol[1].get('set dstintf', [''])[0] == '"any"' and \
+           pol[1].get('set srcaddr', [''])[0] == '"all"' and \
+           pol[1].get('set dstaddr', [''])[0] == '"all"' and \
+           pol[1].get('set service', [''])[0] == '"ALL"':
             last_deny_pol = pol
             break
 
+new_config_firewall_policy2 = defaultdict(f)
 if last_deny_pol:
     for pol_id, pol in new_config_firewall_policy1.items():
         if not pol_id.startswith('comment'): # skip comment
-            if pol.get('set action', [''])[0] == 'deny':
-                if pol_id != last_deny_pol[0]:  # not last deny policy
-                    new_config_firewall_policy2[pol_id] = pol
-                else:   # last deny policy
-                    new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
-                    for k1, v1 in pol.items():
-                        if k1.startswith('comment'):    # already a comment
-                            new_config_firewall_policy2[k1] = v1
-                        else:    
-                            new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
-                    new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
+            if pol_id != last_deny_pol[0]:
+                new_config_firewall_policy2[pol_id] = pol
+            else:   # last deny policy
+                new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format(pol_id)]
+                for k1, v1 in pol.items():
+                    if k1.startswith('comment'):    # already a comment
+                        new_config_firewall_policy2[k1] = v1
+                    else:    
+                        new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['# {} {}'.format(k1, v1[0])]
+                new_config_firewall_policy2[' '.join(['comment', str(uuid.uuid4())])] = ['#{}'.format('next')]
+        else:
+            new_config_firewall_policy2[pol_id] = pol
+else:
+    print("### Cannot find explicit deny rule ... ###")
 
 firewall_policy_fix = fgt_path / '{}-{}-fix.txt'.format(output_prefix, '-'.join('config firewall policy'.split(' ')))
 original_stdout = sys.stdout
